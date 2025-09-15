@@ -6,6 +6,9 @@
     "dev": "vercel dev",
     "deploy": "vercel --prod"
   },
+  "dependencies": {
+    "firebase-admin": "^12.5.0"
+  },
   "main": "index.js",
   "keywords": [],
   "author": "",
