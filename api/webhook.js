@@ -2,11 +2,54 @@
 import { db } from "../lib/firebase.js";
 import { categories, drinksByBase, getDrinkByName, parsePrice, addOnPriceList } from "../lib/menu.js";
 
+const MENU_IMAGE_URLS = [
+  "https://coz-fb-vercel.vercel.app/menu1.png",
+  "https://coz-fb-vercel.vercel.app/menu2.png"
+];
+
 export const config = {
   api: {
     bodyParser: true // default on Vercel; OK since we skip signature verification here
   }
 };
+
+async function sendImage(recipientId, url, reusable = true) {
+  await fetch(`https://graph.facebook.com/v23.0/me/messages?access_token=${process.env.PAGE_ACCESS_TOKEN}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      recipient: { id: recipientId },
+      message: {
+        attachment: {
+          type: "image",
+          payload: { url, is_reusable: reusable }
+        }
+      }
+    })
+  });
+}
+
+async function sendMenuCarousel(recipientId, imageUrls) {
+  const elements = imageUrls.slice(0, 10).map((url, idx) => ({
+    title: `Menu ${idx + 1}`,
+    image_url: url
+    // (optional) buttons can go here if you want deep links/actions
+  }));
+
+  await fetch(`https://graph.facebook.com/v23.0/me/messages?access_token=${process.env.PAGE_ACCESS_TOKEN}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      recipient: { id: recipientId },
+      message: {
+        attachment: {
+          type: "template",
+          payload: { template_type: "generic", elements }
+        }
+      }
+    })
+  });
+}
 
 export default async function handler(req, res) {
   const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
@@ -50,8 +93,17 @@ export default async function handler(req, res) {
 
     try {
       if (rawText === "menu" || rawText === "order") {
-        // reset current session step
         await setSession(senderId, { step: "category", draftItem: null });
+
+        // EITHER: Send a 2-card carousel (recommended UX)
+        await sendMenuCarousel(senderId, MENU_IMAGE_URLS);
+
+        // OR: send two separate image messages (uncomment if you prefer two single images)
+        // for (const url of MENU_IMAGE_URLS) {
+        //   await sendImage(senderId, url);
+        // }
+
+        // Follow with categories
         await sendCategoryList(senderId);
         continue;
       }
@@ -280,7 +332,7 @@ export default async function handler(req, res) {
       return sendQuickReplies(userId, `Add-ons for ${drink.name}? (${selectedText})`, buttons);
     }
     if (step === "quantity") {
-      const buttons = [1,2,3,4,5].map(n => ({ title: `${n}`, payload: `QTY_${n}` }));
+      const buttons = [1, 2, 3, 4, 5].map(n => ({ title: `${n}`, payload: `QTY_${n}` }));
       return sendQuickReplies(userId, `How many ${drink.name}?`, buttons);
     }
     if (step === "confirm") {
@@ -322,7 +374,7 @@ export default async function handler(req, res) {
   }
 
   async function clearCart(userId) {
-    await db.collection("carts").doc(userId).delete().catch(() => {});
+    await db.collection("carts").doc(userId).delete().catch(() => { });
   }
 
   async function handleCheckout(userId) {
@@ -354,7 +406,7 @@ export default async function handler(req, res) {
       return sendText(userId, "🛒 Your cart is empty.");
     }
     const lines = items.map((it, i) =>
-      `${i+1}) ${it.quantity}× ${it.drink} (${it.size}${it.milk!=="none" ? ", "+it.milk : ""}${it.temperature!=="none" ? ", "+it.temperature : ""})${it.addOns?.length? " + "+it.addOns.join(", ") : ""} — ₱${it.subtotal ?? (it.price*it.quantity)}`
+      `${i + 1}) ${it.quantity}× ${it.drink} (${it.size}${it.milk !== "none" ? ", " + it.milk : ""}${it.temperature !== "none" ? ", " + it.temperature : ""})${it.addOns?.length ? " + " + it.addOns.join(", ") : ""} — ₱${it.subtotal ?? (it.price * it.quantity)}`
     );
     const total = items.reduce((s, it) => s + (it.subtotal ?? (it.price * it.quantity)), 0);
     await sendText(userId, `🛒 Cart:\n${lines.join("\n")}\n\nTotal: ₱${total}`);
