@@ -192,7 +192,7 @@ export default async function handler(req, res) {
     if (payload.startsWith("CATEGORY_")) {
       const base = payload.split("CATEGORY_")[1];
       await setSession(userId, { step: "drink", draftItem: { base } });
-      return sendDrinks(userId, base); // or sendDrinksCarousel if you add it
+      return sendDrinksCarousel(userId, base); // or sendDrinksCarousel if you add it
     }
 
     // 2) DRINK_<encodedName> (starts a draft)
@@ -520,6 +520,37 @@ export default async function handler(req, res) {
     const buttons = categories.map(c => ({ title: c.title, payload: `CATEGORY_${c.base}` })).slice(0, 11);
     await sendQuickReplies(userId, "Choose a category:", buttons);
   }
+
+  async function sendDrinksCarousel(userId, base) {
+  const list = drinksByBase(base);
+  if (!list.length) {
+    return sendText(userId, "No drinks in this category yet. Type 'menu' to pick another.");
+  }
+
+  const elements = list.slice(0, 10).map(d => ({
+    title: d.name,                          // long titles OK (≈80 chars)
+    subtitle: `₱${parsePrice(d.price)}`,    // full price
+    // Optional per-drink image:
+    // image_url: `https://coz-fb-vercel.vercel.app/img/${encodeURIComponent(d.slug || d.name)}.jpg`,
+    buttons: [
+      { type: "postback", title: "Select", payload: `DRINK_${encodeURIComponent(d.name)}` }
+    ]
+  }));
+
+  await fetch(`https://graph.facebook.com/v23.0/me/messages?access_token=${process.env.PAGE_ACCESS_TOKEN}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      recipient: { id: userId },
+      message: {
+        attachment: {
+          type: "template",
+          payload: { template_type: "generic", elements }
+        }
+      }
+    })
+  });
+}
 
   // (Optional) quick-reply based drinks picker (kept for fallback)
   async function sendDrinks(userId, base) {
