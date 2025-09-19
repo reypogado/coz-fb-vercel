@@ -142,6 +142,9 @@ export default async function handler(req, res) {
 
     try {
       if (rawText === "menu" || rawText === "order") {
+
+        await clearCart(senderId);
+
         await setSession(senderId, { step: "category", draftItem: null });
 
         // Show the 2-card menu carousel first
@@ -479,7 +482,7 @@ export default async function handler(req, res) {
     await db.collection("orders").add(order);
     await clearCart(userId);
 
-    await sendText(userId, `✅ Order placed! Grand total: ₱${grandTotal}. Thank you!`);
+    await sendText(userId, `✅ Order placed! Grand total: ₱${grandTotal}. We'll call you now for confirmation and address Thank you!`);
     return sendQuickReplies(userId, "Need anything else?", [
       { title: "Order again", payload: "MORE" },
       { title: "View cart", payload: "VIEW_CART" }
@@ -522,35 +525,35 @@ export default async function handler(req, res) {
   }
 
   async function sendDrinksCarousel(userId, base) {
-  const list = drinksByBase(base);
-  if (!list.length) {
-    return sendText(userId, "No drinks in this category yet. Type 'menu' to pick another.");
-  }
+    const list = drinksByBase(base);
+    if (!list.length) {
+      return sendText(userId, "No drinks in this category yet. Type 'menu' to pick another.");
+    }
 
-  const elements = list.slice(0, 10).map(d => ({
-    title: d.name,                          // long titles OK (≈80 chars)
-    subtitle: `₱${parsePrice(d.price)}`,    // full price
-    // Optional per-drink image:
-    // image_url: `https://coz-fb-vercel.vercel.app/img/${encodeURIComponent(d.slug || d.name)}.jpg`,
-    buttons: [
-      { type: "postback", title: "Select", payload: `DRINK_${encodeURIComponent(d.name)}` }
-    ]
-  }));
+    const elements = list.slice(0, 10).map(d => ({
+      title: d.name,                          // long titles OK (≈80 chars)
+      subtitle: `₱${parsePrice(d.price)}`,    // full price
+      // Optional per-drink image:
+      // image_url: `https://coz-fb-vercel.vercel.app/img/${encodeURIComponent(d.slug || d.name)}.jpg`,
+      buttons: [
+        { type: "postback", title: "Select", payload: `DRINK_${encodeURIComponent(d.name)}` }
+      ]
+    }));
 
-  await fetch(`https://graph.facebook.com/v23.0/me/messages?access_token=${process.env.PAGE_ACCESS_TOKEN}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      recipient: { id: userId },
-      message: {
-        attachment: {
-          type: "template",
-          payload: { template_type: "generic", elements }
+    await fetch(`https://graph.facebook.com/v23.0/me/messages?access_token=${process.env.PAGE_ACCESS_TOKEN}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        recipient: { id: userId },
+        message: {
+          attachment: {
+            type: "template",
+            payload: { template_type: "generic", elements }
+          }
         }
-      }
-    })
-  });
-}
+      })
+    });
+  }
 
   // (Optional) quick-reply based drinks picker (kept for fallback)
   async function sendDrinks(userId, base) {
