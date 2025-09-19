@@ -32,8 +32,19 @@ async function sendImage(recipientId, url, reusable = true) {
 async function sendMenuCarousel(recipientId, imageUrls) {
   const elements = imageUrls.slice(0, 10).map((url, idx) => ({
     title: `Menu ${idx + 1}`,
-    image_url: url
-    // (optional) buttons can go here if you want deep links/actions
+    image_url: url,
+    // tap on the card opens the image (or a page) directly
+    default_action: {
+      type: "web_url",
+      url, // you can point this to a page/PDF if you prefer
+      webview_height_ratio: "tall",
+      messenger_extensions: false
+    },
+    buttons: [
+      { type: "web_url", url, title: "Open image" },
+      // optional: a CTA back into your flow
+      { type: "postback", title: "Start order", payload: "MORE" }
+    ]
   }));
 
   await fetch(`https://graph.facebook.com/v23.0/me/messages?access_token=${process.env.PAGE_ACCESS_TOKEN}`, {
@@ -50,7 +61,6 @@ async function sendMenuCarousel(recipientId, imageUrls) {
     })
   });
 }
-
 export default async function handler(req, res) {
   const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
   const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
@@ -230,9 +240,22 @@ export default async function handler(req, res) {
 
     if (payload === "CONFIRM_ADD") {
       // compute subtotal
-      const basePrice = parsePrice(drink.price);
+      let basePrice = parsePrice(drink.price);
+
+      // add +10 if upsize
+      if (draft.size?.toLowerCase() === "upsize") {
+        const extra = drink.base === "fruit" ? 40 : 30;
+        basePrice += extra;
+      }
+
+      // add +20 if oat milk
+      if (draft.milk?.toLowerCase() === "oat") {
+        basePrice += 20;
+      }
+
       const addOnPrices = addOnPriceList(drink).filter(a => draft.addOns.includes(a.name));
       const addOnTotal = addOnPrices.reduce((s, a) => s + Number(a.price || 0), 0);
+
       const perItem = basePrice + addOnTotal;
       const subtotal = perItem * draft.quantity;
 
@@ -303,11 +326,25 @@ export default async function handler(req, res) {
 
   async function askNextStep(userId, drink, step) {
     if (step === "size") {
-      const opts = (drink.sizeOptions ?? []).map(s => ({ title: cap(s), payload: `SIZE_${s}` }));
+      const opts = (drink.sizeOptions ?? []).map(s => {
+        let title = cap(s);
+        if (s.toLowerCase() === "upsize") {
+          // check if fruit base → +40 else +10
+          const extra = drink.base === "fruit" ? 40 : 10;
+          title += ` (+₱${extra})`;
+        }
+        return { title, payload: `SIZE_${s}` };
+      });
       return sendQuickReplies(userId, `Choose size for ${drink.name}:`, opts);
     }
     if (step === "milk") {
-      const opts = (drink.milkOptions ?? []).map(m => ({ title: cap(m), payload: `MILK_${m}` }));
+      const opts = (drink.milkOptions ?? []).map(m => {
+        let title = cap(m);
+        if (m.toLowerCase() === "oat") {
+          title += " (+₱20)";
+        }
+        return { title, payload: `MILK_${m}` };
+      });
       return sendQuickReplies(userId, `Milk option for ${drink.name}:`, opts);
     }
     if (step === "temperature") {
@@ -317,18 +354,24 @@ export default async function handler(req, res) {
     if (step === "add_ons") {
       const list = addOnPriceList(drink);
       if (!list.length) {
-        // skip
+        // skip if no add-ons
         return askNextStep(userId, drink, "quantity");
       }
+
       const session = await getSession(userId);
       const chosen = session?.draftItem?.addOns ?? [];
-      // Show toggles and Skip / Next
+
+      // Show up to 11 quick replies (Messenger limit)
       const buttons = list.slice(0, 11).map(a => ({
         title: `${chosen.includes(a.name) ? "✅ " : ""}${a.name} (+₱${a.price})`,
         payload: `ADDON_${encodeURIComponent(a.name)}`
       }));
+
+      // Add Skip/Next button
       buttons.push({ title: "Skip/Next", payload: "ADDON_SKIP" });
+
       const selectedText = chosen.length ? `Selected: ${chosen.join(", ")}` : "None";
+
       return sendQuickReplies(userId, `Add-ons for ${drink.name}? (${selectedText})`, buttons);
     }
     if (step === "quantity") {
@@ -449,10 +492,13 @@ export default async function handler(req, res) {
       return sendText(userId, "No drinks in this category yet. Type 'menu' to pick another.");
     }
     // limit to 11 quick replies (Messenger limit = 13; keep some for control)
-    const buttons = list.slice(0, 11).map(d => ({
-      title: trim13(d.name),
-      payload: `DRINK_${encodeURIComponent(d.name)}`
-    }));
+    const buttons = list.slice(0, 11).map(d => {
+      const price = parsePrice(d.price); // already imported in your code
+      return {
+        title: trim13(`${d.name} (₱${price})`),
+        payload: `DRINK_${encodeURIComponent(d.name)}`
+      };
+    });
     await sendQuickReplies(userId, `Pick a ${base} item:`, buttons);
   }
 
