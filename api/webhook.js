@@ -13,6 +13,8 @@ export const config = {
   }
 };
 
+// ---------- SENDERS (MEDIA / CAROUSELS) ----------
+
 async function sendImage(recipientId, url, reusable = true) {
   await fetch(`https://graph.facebook.com/v23.0/me/messages?access_token=${process.env.PAGE_ACCESS_TOKEN}`, {
     method: "POST",
@@ -33,16 +35,14 @@ async function sendMenuCarousel(recipientId, imageUrls) {
   const elements = imageUrls.slice(0, 10).map((url, idx) => ({
     title: `Menu ${idx + 1}`,
     image_url: url,
-    // tap on the card opens the image (or a page) directly
     default_action: {
       type: "web_url",
-      url, // you can point this to a page/PDF if you prefer
+      url,
       webview_height_ratio: "tall",
       messenger_extensions: false
     },
     buttons: [
       { type: "web_url", url, title: "Open image" },
-      // optional: a CTA back into your flow
       { type: "postback", title: "Start order", payload: "MORE" }
     ]
   }));
@@ -61,6 +61,45 @@ async function sendMenuCarousel(recipientId, imageUrls) {
     })
   });
 }
+
+// Carousel for drinks (avoids quick-reply truncation)
+async function sendDrinksCarousel(userId, base) {
+  const list = drinksByBase(base);
+  if (!list.length) {
+    return sendText(userId, "No drinks in this category yet. Type 'menu' to pick another.");
+  }
+
+  const elements = list.slice(0, 10).map(d => ({
+    title: d.name,                             // up to ~80 chars
+    subtitle: `₱${parsePrice(d.price)}`,       // full price display
+    // Optional per-drink image:
+    // image_url: `https://coz-fb-vercel.vercel.app/img/${encodeURIComponent(d.slug || d.name)}.jpg`,
+    buttons: [
+      {
+        type: "postback",
+        title: "Select",
+        payload: `DRINK_${encodeURIComponent(d.name)}`
+      }
+    ]
+  }));
+
+  await fetch(`https://graph.facebook.com/v23.0/me/messages?access_token=${process.env.PAGE_ACCESS_TOKEN}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      recipient: { id: userId },
+      message: {
+        attachment: {
+          type: "template",
+          payload: { template_type: "generic", elements }
+        }
+      }
+    })
+  });
+}
+
+// ---------- HANDLER ----------
+
 export default async function handler(req, res) {
   const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
   const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
@@ -105,13 +144,8 @@ export default async function handler(req, res) {
       if (rawText === "menu" || rawText === "order") {
         await setSession(senderId, { step: "category", draftItem: null });
 
-        // EITHER: Send a 2-card carousel (recommended UX)
+        // Show the 2-card menu carousel first
         await sendMenuCarousel(senderId, MENU_IMAGE_URLS);
-
-        // OR: send two separate image messages (uncomment if you prefer two single images)
-        // for (const url of MENU_IMAGE_URLS) {
-        //   await sendImage(senderId, url);
-        // }
 
         // Follow with categories
         await sendCategoryList(senderId);
@@ -158,7 +192,7 @@ export default async function handler(req, res) {
     if (payload.startsWith("CATEGORY_")) {
       const base = payload.split("CATEGORY_")[1];
       await setSession(userId, { step: "drink", draftItem: { base } });
-      return sendDrinks(userId, base);
+      return sendDrinksCarousel(userId, base); // use carousel (no truncation)
     }
 
     // DRINK_<encodedName>
@@ -186,7 +220,7 @@ export default async function handler(req, res) {
       return askNextStep(userId, drink, nextStep);
     }
 
-    // SIZE_, MILK_, TEMP_, ADDON_, ADDON_SKIP, QTY_, CONFIRM_ADD, MORE, CHECKOUT
+    // SIZE_, MILK_, TEMP_, ADDON_, ADDON_SKIP, QTY_, CONFIRM_ADD, MORE, CHECKOUT, CLEAR_CART
     const session = await getSession(userId);
     const draft = session?.draftItem;
     const drink = draft?.drink ? getDrinkByName(draft.drink) : null;
@@ -242,7 +276,7 @@ export default async function handler(req, res) {
       // compute subtotal
       let basePrice = parsePrice(drink.price);
 
-      // add +10 if upsize
+      // add extra if upsize: +40 for fruit base, else +10
       if (draft.size?.toLowerCase() === "upsize") {
         const extra = drink.base === "fruit" ? 40 : 30;
         basePrice += extra;
@@ -253,6 +287,7 @@ export default async function handler(req, res) {
         basePrice += 20;
       }
 
+      // add-ons adjustment
       const addOnPrices = addOnPriceList(drink).filter(a => draft.addOns.includes(a.name));
       const addOnTotal = addOnPrices.reduce((s, a) => s + Number(a.price || 0), 0);
 
@@ -297,6 +332,11 @@ export default async function handler(req, res) {
 
     if (payload === "CHECKOUT") {
       return handleCheckout(userId);
+    }
+
+    if (payload === "CLEAR_CART") {
+      await clearCart(userId);
+      return sendText(userId, "🧹 Cart cleared.");
     }
 
     // Fallback
@@ -417,7 +457,7 @@ export default async function handler(req, res) {
   }
 
   async function clearCart(userId) {
-    await db.collection("carts").doc(userId).delete().catch(() => { });
+    await db.collection("carts").doc(userId).delete().catch(() => {});
   }
 
   async function handleCheckout(userId) {
@@ -456,19 +496,11 @@ export default async function handler(req, res) {
     return sendQuickReplies(userId, "Proceed to checkout?", [
       { title: "✅ Checkout", payload: "CHECKOUT" },
       { title: "➕ Add more", payload: "MORE" },
-      { title: "🧹 Clear", payload: "CLEAR_CART" } // Handle below
+      { title: "🧹 Clear", payload: "CLEAR_CART" }
     ]);
   }
 
-  // handle clear via payload too
-  async function handlePayloadClear(userId, payload) {
-    if (payload === "CLEAR_CART") {
-      await clearCart(userId);
-      return sendText(userId, "🧹 Cart cleared.");
-    }
-  }
-
-  // ----- SESSION STATE (for step-by-step building) -----
+  // ----- SESSION STATE -----
 
   async function setSession(userId, data) {
     await db.collection("sessions").doc(userId).set(data, { merge: true });
@@ -486,16 +518,16 @@ export default async function handler(req, res) {
     await sendQuickReplies(userId, "Choose a category:", buttons);
   }
 
+  // (Optional) quick-reply based drinks picker (kept for fallback)
   async function sendDrinks(userId, base) {
     const list = drinksByBase(base);
     if (!list.length) {
       return sendText(userId, "No drinks in this category yet. Type 'menu' to pick another.");
     }
-    // limit to 11 quick replies (Messenger limit = 13; keep some for control)
     const buttons = list.slice(0, 11).map(d => {
-      const price = parsePrice(d.price); // already imported in your code
+      const price = parsePrice(d.price);
       return {
-        title: trim13(`${d.name} (₱${price})`),
+        title: trim13(`${d.name} (₱${price})`), // may truncate
         payload: `DRINK_${encodeURIComponent(d.name)}`
       };
     });
