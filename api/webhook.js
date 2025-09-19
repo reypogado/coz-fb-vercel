@@ -188,14 +188,14 @@ export default async function handler(req, res) {
   // ----- FLOW HANDLERS -----
 
   async function handlePayload(userId, payload) {
-    // CATEGORY_xxx
+    // 1) CATEGORY_xxx (doesn't need a draft)
     if (payload.startsWith("CATEGORY_")) {
       const base = payload.split("CATEGORY_")[1];
       await setSession(userId, { step: "drink", draftItem: { base } });
-      return sendDrinksCarousel(userId, base); // use carousel (no truncation)
+      return sendDrinks(userId, base); // or sendDrinksCarousel if you add it
     }
 
-    // DRINK_<encodedName>
+    // 2) DRINK_<encodedName> (starts a draft)
     if (payload.startsWith("DRINK_")) {
       const name = decodeURIComponent(payload.slice("DRINK_".length));
       const drink = getDrinkByName(name);
@@ -212,22 +212,40 @@ export default async function handler(req, res) {
         quantity: 1
       };
 
-      // Decide next step dynamically
       const nextStep = nextStepAfter("drink", drink);
       await setSession(userId, { step: nextStep, draftItem: draft });
-
-      // Ask next question
       return askNextStep(userId, drink, nextStep);
     }
 
-    // SIZE_, MILK_, TEMP_, ADDON_, ADDON_SKIP, QTY_, CONFIRM_ADD, MORE, CHECKOUT, CLEAR_CART
+    // 3) GLOBAL ACTIONS (no draft required) — handle BEFORE reading session/draft
+    if (payload === "MORE") {
+      await setSession(userId, { step: "category", draftItem: null });
+      return sendCategoryList(userId);
+    }
+
+    if (payload === "VIEW_CART") {
+      return sendCart(userId);
+    }
+
+    if (payload === "CHECKOUT") {
+      return handleCheckout(userId);
+    }
+
+    if (payload === "CLEAR_CART") {
+      await clearCart(userId);
+      return sendText(userId, "🧹 Cart cleared.");
+    }
+
+    // 4) BELOW THIS POINT: payloads REQUIRE an active draft/session
     const session = await getSession(userId);
     const draft = session?.draftItem;
     const drink = draft?.drink ? getDrinkByName(draft.drink) : null;
+
     if (!draft || !drink) {
       return sendText(userId, "Session expired. Type 'menu' to start again.");
     }
 
+    // SIZE_
     if (payload.startsWith("SIZE_")) {
       draft.size = payload.slice("SIZE_".length);
       const step = nextStepAfter("size", drink);
@@ -235,6 +253,7 @@ export default async function handler(req, res) {
       return askNextStep(userId, drink, step);
     }
 
+    // MILK_
     if (payload.startsWith("MILK_")) {
       draft.milk = payload.slice("MILK_".length);
       const step = nextStepAfter("milk", drink);
@@ -242,6 +261,7 @@ export default async function handler(req, res) {
       return askNextStep(userId, drink, step);
     }
 
+    // TEMP_
     if (payload.startsWith("TEMP_")) {
       draft.temperature = payload.slice("TEMP_".length);
       const step = nextStepAfter("temperature", drink);
@@ -249,22 +269,23 @@ export default async function handler(req, res) {
       return askNextStep(userId, drink, step);
     }
 
+    // ADDON_SKIP
     if (payload === "ADDON_SKIP") {
       const step = nextStepAfter("add_ons", drink);
       await setSession(userId, { step, draftItem: draft });
       return askNextStep(userId, drink, step);
     }
 
+    // ADDON_<name> (toggle)
     if (payload.startsWith("ADDON_")) {
-      // toggle add-on
       const addOnName = decodeURIComponent(payload.slice("ADDON_".length));
       const exists = draft.addOns.includes(addOnName);
       draft.addOns = exists ? draft.addOns.filter(a => a !== addOnName) : [...draft.addOns, addOnName];
       await setSession(userId, { step: "add_ons", draftItem: draft });
-      // Re-ask add-ons with current selection
       return askNextStep(userId, drink, "add_ons");
     }
 
+    // QTY_
     if (payload.startsWith("QTY_")) {
       const qty = Math.max(1, parseInt(payload.slice("QTY_".length), 10) || 1);
       draft.quantity = qty;
@@ -272,22 +293,22 @@ export default async function handler(req, res) {
       return askNextStep(userId, drink, "confirm");
     }
 
+    // CONFIRM_ADD
     if (payload === "CONFIRM_ADD") {
-      // compute subtotal
       let basePrice = parsePrice(drink.price);
 
-      // add extra if upsize: +40 for fruit base, else +10
+      // Upsize: +40 if fruit, else +10
       if (draft.size?.toLowerCase() === "upsize") {
         const extra = drink.base === "fruit" ? 40 : 30;
         basePrice += extra;
       }
 
-      // add +20 if oat milk
+      // Oat milk: +20
       if (draft.milk?.toLowerCase() === "oat") {
         basePrice += 20;
       }
 
-      // add-ons adjustment
+      // Add-ons total
       const addOnPrices = addOnPriceList(drink).filter(a => draft.addOns.includes(a.name));
       const addOnTotal = addOnPrices.reduce((s, a) => s + Number(a.price || 0), 0);
 
@@ -321,24 +342,6 @@ export default async function handler(req, res) {
       ]);
     }
 
-    if (payload === "MORE") {
-      await setSession(userId, { step: "category", draftItem: null });
-      return sendCategoryList(userId);
-    }
-
-    if (payload === "VIEW_CART") {
-      return sendCart(userId);
-    }
-
-    if (payload === "CHECKOUT") {
-      return handleCheckout(userId);
-    }
-
-    if (payload === "CLEAR_CART") {
-      await clearCart(userId);
-      return sendText(userId, "🧹 Cart cleared.");
-    }
-
     // Fallback
     return sendText(userId, "I didn't get that. Type 'menu' to start ordering.");
   }
@@ -370,7 +373,7 @@ export default async function handler(req, res) {
         let title = cap(s);
         if (s.toLowerCase() === "upsize") {
           // check if fruit base → +40 else +10
-          const extra = drink.base === "fruit" ? 40 : 10;
+          const extra = drink.base === "fruit" ? 40 : 30;
           title += ` (+₱${extra})`;
         }
         return { title, payload: `SIZE_${s}` };
@@ -457,7 +460,7 @@ export default async function handler(req, res) {
   }
 
   async function clearCart(userId) {
-    await db.collection("carts").doc(userId).delete().catch(() => {});
+    await db.collection("carts").doc(userId).delete().catch(() => { });
   }
 
   async function handleCheckout(userId) {
