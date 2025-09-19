@@ -482,7 +482,7 @@ export default async function handler(req, res) {
     await db.collection("orders").add(order);
     await clearCart(userId);
 
-    await sendText(userId, `✅ Order placed! Grand total: ₱${grandTotal}. We'll call you now for confirmation and address Thank you!`);
+    await sendText(userId, `✅ Order placed! Grand total: ₱${grandTotal}. We'll call you now for confirmation and address, please send your mobile number. Thank you!`);
     return sendQuickReplies(userId, "Need anything else?", [
       { title: "Order again", payload: "MORE" },
       { title: "View cart", payload: "VIEW_CART" }
